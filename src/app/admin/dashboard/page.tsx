@@ -12,6 +12,36 @@ const LocationPicker = dynamic(() => import('@/components/ui/LocationPicker'), {
     loading: () => <div className="h-64 w-full bg-zinc-100 animate-pulse rounded-xl flex items-center justify-center text-zinc-400 text-sm font-medium border border-zinc-200">Loading interactive map...</div>
 });
 
+function compressImage(file: File, maxWidth = 1200, quality = 0.75): Promise<string> {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = (readerEvent) => {
+            const img = new Image();
+            img.onload = () => {
+                const canvas = document.createElement("canvas");
+                let { width, height } = img;
+                if (width > maxWidth) {
+                    height = Math.round((height * maxWidth) / width);
+                    width = maxWidth;
+                }
+                canvas.width = width;
+                canvas.height = height;
+                const ctx = canvas.getContext("2d");
+                if (!ctx) {
+                    resolve(readerEvent.target?.result as string);
+                    return;
+                }
+                ctx.drawImage(img, 0, 0, width, height);
+                resolve(canvas.toDataURL("image/jpeg", quality));
+            };
+            img.onerror = () => reject(new Error("Failed to load image for compression"));
+            img.src = readerEvent.target?.result as string;
+        };
+        reader.onerror = () => reject(new Error("Failed to read file"));
+        reader.readAsDataURL(file);
+    });
+}
+
 export default function AdminDashboard() {
     const router = useRouter();
     const [events, setEvents] = useState<any[]>([]);
@@ -20,6 +50,7 @@ export default function AdminDashboard() {
 
     const [form, setForm] = useState({ title: "", date: "", location: "", shortDescription: "", fullDescription: "", image: "", videoUrl: "", category: "Community Events" });
     const [isUploading, setIsUploading] = useState(false);
+    const [isUploadingImage, setIsUploadingImage] = useState(false);
     const [passwordForm, setPasswordForm] = useState({ currentPassword: "", newPassword: "", confirmPassword: "" });
 
     useEffect(() => {
@@ -328,19 +359,53 @@ export default function AdminDashboard() {
                                             accept="image/*"
                                             required={view === "create" && !form.image && !form.videoUrl}
                                             className="w-full border border-zinc-200 p-2.5 rounded-xl bg-zinc-50 focus:ring-2 focus:ring-primary/20 outline-none transition-all file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-primary/10 file:text-primary hover:file:bg-primary/20 cursor-pointer text-sm" 
-                                            onChange={e => {
+                                            onChange={async (e) => {
                                                 const file = e.target.files?.[0];
-                                                if (file) {
-                                                    // Convert image to Base64 for easy DB storage
-                                                    const reader = new FileReader();
-                                                    reader.onloadend = () => {
-                                                        setForm({ ...form, image: reader.result as string });
-                                                    };
-                                                    reader.readAsDataURL(file);
+                                                if (!file) return;
+
+                                                setIsUploadingImage(true);
+                                                const cloudName = process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME || "cj9atno2";
+                                                const uploadPreset = process.env.NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET || "jeevadhara";
+
+                                                try {
+                                                    const formData = new FormData();
+                                                    formData.append("file", file);
+                                                    formData.append("upload_preset", uploadPreset);
+
+                                                    const res = await fetch(`https://api.cloudinary.com/v1_1/${cloudName}/image/upload`, {
+                                                        method: "POST",
+                                                        body: formData
+                                                    });
+
+                                                    const data = await res.json();
+                                                    if (data.secure_url) {
+                                                        setForm(prev => ({ ...prev, image: data.secure_url }));
+                                                        toast.success("Image uploaded successfully!");
+                                                    } else {
+                                                        throw new Error(data.error?.message || "Cloudinary direct upload failed");
+                                                    }
+                                                } catch (err) {
+                                                    console.warn("Direct Cloudinary upload failed, falling back to client-side compression:", err);
+                                                    try {
+                                                        const compressed = await compressImage(file, 1200, 0.75);
+                                                        setForm(prev => ({ ...prev, image: compressed }));
+                                                        toast.success("Image optimized and ready!");
+                                                    } catch (cErr) {
+                                                        console.error("Compression failed:", cErr);
+                                                        toast.error("Failed to process image");
+                                                    }
+                                                } finally {
+                                                    setIsUploadingImage(false);
                                                 }
                                             }} 
                                         />
                                     </div>
+                                    {isUploadingImage && (
+                                        <div className="text-sm font-medium text-primary animate-pulse">Uploading image...</div>
+                                    )}
+                                    {form.image && !isUploadingImage && (
+                                        <div className="text-sm font-medium text-green-600">Image ready ✓</div>
+                                    )}
                                 </div>
                             </div>
 
@@ -354,7 +419,9 @@ export default function AdminDashboard() {
                             </div>
                             <div className="pt-4 border-t border-zinc-100 flex justify-end gap-3 mt-8">
                                 <Button type="button" variant="outline" onClick={() => { setView("list"); setEditingId(null); setForm({ title: "", date: "", location: "", shortDescription: "", fullDescription: "", image: "", videoUrl: "", category: "Community Events" }); }}>Cancel</Button>
-                                <Button type="submit" size="lg" className="px-8 shadow-md" variant="primary">{view === "edit" ? "Update Event" : "Publish Event"}</Button>
+                                <Button type="submit" size="lg" className="px-8 shadow-md" variant="primary" disabled={isUploading || isUploadingImage}>
+                                    {isUploading || isUploadingImage ? "Uploading Media..." : view === "edit" ? "Update Event" : "Publish Event"}
+                                </Button>
                             </div>
                         </form>
                     </Card>
