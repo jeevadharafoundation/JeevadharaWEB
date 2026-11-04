@@ -12,36 +12,6 @@ const LocationPicker = dynamic(() => import('@/components/ui/LocationPicker'), {
     loading: () => <div className="h-64 w-full bg-zinc-100 animate-pulse rounded-xl flex items-center justify-center text-zinc-400 text-sm font-medium border border-zinc-200">Loading interactive map...</div>
 });
 
-function compressImage(file: File, maxWidth = 1200, quality = 0.75): Promise<string> {
-    return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = (readerEvent) => {
-            const img = new Image();
-            img.onload = () => {
-                const canvas = document.createElement("canvas");
-                let { width, height } = img;
-                if (width > maxWidth) {
-                    height = Math.round((height * maxWidth) / width);
-                    width = maxWidth;
-                }
-                canvas.width = width;
-                canvas.height = height;
-                const ctx = canvas.getContext("2d");
-                if (!ctx) {
-                    resolve(readerEvent.target?.result as string);
-                    return;
-                }
-                ctx.drawImage(img, 0, 0, width, height);
-                resolve(canvas.toDataURL("image/jpeg", quality));
-            };
-            img.onerror = () => reject(new Error("Failed to load image for compression"));
-            img.src = readerEvent.target?.result as string;
-        };
-        reader.onerror = () => reject(new Error("Failed to read file"));
-        reader.readAsDataURL(file);
-    });
-}
-
 export default function AdminDashboard() {
     const router = useRouter();
     const [events, setEvents] = useState<any[]>([]);
@@ -50,7 +20,6 @@ export default function AdminDashboard() {
 
     const [form, setForm] = useState({ title: "", date: "", location: "", shortDescription: "", fullDescription: "", image: "", videoUrl: "", category: "Community Events" });
     const [isUploading, setIsUploading] = useState(false);
-    const [isUploadingImage, setIsUploadingImage] = useState(false);
     const [passwordForm, setPasswordForm] = useState({ currentPassword: "", newPassword: "", confirmPassword: "" });
 
     useEffect(() => {
@@ -359,53 +328,51 @@ export default function AdminDashboard() {
                                             accept="image/*"
                                             required={view === "create" && !form.image && !form.videoUrl}
                                             className="w-full border border-zinc-200 p-2.5 rounded-xl bg-zinc-50 focus:ring-2 focus:ring-primary/20 outline-none transition-all file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-primary/10 file:text-primary hover:file:bg-primary/20 cursor-pointer text-sm" 
-                                            onChange={async (e) => {
+                                            onChange={e => {
                                                 const file = e.target.files?.[0];
                                                 if (!file) return;
 
-                                                setIsUploadingImage(true);
-                                                const cloudName = process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME || "cj9atno2";
-                                                const uploadPreset = process.env.NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET || "jeevadhara";
-
-                                                try {
-                                                    const formData = new FormData();
-                                                    formData.append("file", file);
-                                                    formData.append("upload_preset", uploadPreset);
-
-                                                    const res = await fetch(`https://api.cloudinary.com/v1_1/${cloudName}/image/upload`, {
-                                                        method: "POST",
-                                                        body: formData
+                                                const MAX_SIZE = 4 * 1024 * 1024; // 4 MB limit
+                                                if (file.size > MAX_SIZE) {
+                                                    toast.error("File too large", {
+                                                        description: `Image size must be 4 MB or less. Selected file is ${(file.size / (1024 * 1024)).toFixed(1)} MB.`
                                                     });
-
-                                                    const data = await res.json();
-                                                    if (data.secure_url) {
-                                                        setForm(prev => ({ ...prev, image: data.secure_url }));
-                                                        toast.success("Image uploaded successfully!");
-                                                    } else {
-                                                        throw new Error(data.error?.message || "Cloudinary direct upload failed");
-                                                    }
-                                                } catch (err) {
-                                                    console.warn("Direct Cloudinary upload failed, falling back to client-side compression:", err);
-                                                    try {
-                                                        const compressed = await compressImage(file, 1200, 0.75);
-                                                        setForm(prev => ({ ...prev, image: compressed }));
-                                                        toast.success("Image optimized and ready!");
-                                                    } catch (cErr) {
-                                                        console.error("Compression failed:", cErr);
-                                                        toast.error("Failed to process image");
-                                                    }
-                                                } finally {
-                                                    setIsUploadingImage(false);
+                                                    e.target.value = "";
+                                                    return;
                                                 }
+
+                                                // Convert image to Base64 for database storage (same as before)
+                                                const reader = new FileReader();
+                                                reader.onloadend = () => {
+                                                    const result = reader.result as string;
+                                                    // Protect against edge cases where raw base64 string exceeds 4MB
+                                                    if (result.length > 3.8 * 1024 * 1024) {
+                                                        const img = new Image();
+                                                        img.onload = () => {
+                                                            const canvas = document.createElement("canvas");
+                                                            const scale = Math.sqrt((3.5 * 1024 * 1024) / result.length);
+                                                            canvas.width = Math.round(img.width * scale);
+                                                            canvas.height = Math.round(img.height * scale);
+                                                            const ctx = canvas.getContext("2d");
+                                                            if (ctx) {
+                                                                ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                                                                setForm(prev => ({ ...prev, image: canvas.toDataURL("image/jpeg", 0.85) }));
+                                                                return;
+                                                            }
+                                                            setForm(prev => ({ ...prev, image: result }));
+                                                        };
+                                                        img.src = result;
+                                                    } else {
+                                                        setForm(prev => ({ ...prev, image: result }));
+                                                    }
+                                                };
+                                                reader.readAsDataURL(file);
                                             }} 
                                         />
+                                        <p className="text-xs text-amber-600 mt-1.5 flex items-center gap-1 font-medium">
+                                            <span>⚠️</span> Max file size: 4 MB (JPG, PNG, WebP)
+                                        </p>
                                     </div>
-                                    {isUploadingImage && (
-                                        <div className="text-sm font-medium text-primary animate-pulse">Uploading image...</div>
-                                    )}
-                                    {form.image && !isUploadingImage && (
-                                        <div className="text-sm font-medium text-green-600">Image ready ✓</div>
-                                    )}
                                 </div>
                             </div>
 
@@ -419,8 +386,8 @@ export default function AdminDashboard() {
                             </div>
                             <div className="pt-4 border-t border-zinc-100 flex justify-end gap-3 mt-8">
                                 <Button type="button" variant="outline" onClick={() => { setView("list"); setEditingId(null); setForm({ title: "", date: "", location: "", shortDescription: "", fullDescription: "", image: "", videoUrl: "", category: "Community Events" }); }}>Cancel</Button>
-                                <Button type="submit" size="lg" className="px-8 shadow-md" variant="primary" disabled={isUploading || isUploadingImage}>
-                                    {isUploading || isUploadingImage ? "Uploading Media..." : view === "edit" ? "Update Event" : "Publish Event"}
+                                <Button type="submit" size="lg" className="px-8 shadow-md" variant="primary" disabled={isUploading}>
+                                    {isUploading ? "Uploading Media..." : view === "edit" ? "Update Event" : "Publish Event"}
                                 </Button>
                             </div>
                         </form>
